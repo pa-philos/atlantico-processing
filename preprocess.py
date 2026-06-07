@@ -6,6 +6,8 @@ import numpy as np
 from src.loader import DataLoader
 from src.pipeline import create_preprocessing_pipeline
 
+import argparse
+
 # ----------------------
 # Configuration (edit as needed)
 # ----------------------
@@ -20,11 +22,30 @@ SAMPLING_STRATEGY = 'downsample'
 REGEX_PATTERN = r'^(activityID|heart_rate|.*_(temp|acc16_[xyz]|gyro_[xyz]|mag_[xyz]))$'
 
 # Maximum rows per output file (None to disable)
-MAX_OUTPUT_ROWS = 20000
+# If DOUBLE_DATASET is True, this applies to EACH of the two output files.
+MAX_OUTPUT_ROWS = 10000
 # Output sampling strategy: 'uniform' (evenly spaced) or 'proportional_random'
 OUTPUT_SAMPLING_STRATEGY = 'uniform'  # or 'proportional_random'
 # Optional random seed for reproducibility when using proportional_random
 RANDOM_SEED = 42
+# Enable double dataset (split each result into 2 files)
+DOUBLE_DATASET = False
+
+def parse_args():
+    global OUT_DIR, MAX_OUTPUT_ROWS, OUTPUT_SAMPLING_STRATEGY, DOUBLE_DATASET
+    parser = argparse.ArgumentParser(description='Preprocess dataset for ESP32.')
+    parser.add_argument('--double', action='store_true', help='Enable double dataset mode (split outputs into two files)')
+    parser.add_argument('--max-rows', type=int, default=MAX_OUTPUT_ROWS, help=f'Max rows per output file (default: {MAX_OUTPUT_ROWS})')
+    parser.add_argument('--out-dir', type=str, default=OUT_DIR, help=f'Output directory (default: {OUT_DIR})')
+    
+    args = parser.parse_args()
+    DOUBLE_DATASET = args.double
+    if args.max_rows is not None:
+        MAX_OUTPUT_ROWS = args.max_rows
+    if args.out_dir is not None:
+        OUT_DIR = args.out_dir
+    print(f"Configuration: DOUBLE_DATASET={DOUBLE_DATASET}, MAX_OUTPUT_ROWS={MAX_OUTPUT_ROWS}, OUT_DIR={OUT_DIR}")
+
 
 
 def export_binary_with_metadata(df, base_filename):
@@ -108,8 +129,8 @@ def export_binary_with_metadata(df, base_filename):
     }
 
 def main():
-    # Verify input directories
-    
+    parse_args()
+
     # Verify input directories
     if not os.path.exists(PROTOCOL_DIR):
         print(f"Error: Protocol directory '{PROTOCOL_DIR}' not found.")
@@ -224,9 +245,13 @@ def main():
                 processed['activityID'] = processed['activityID'].fillna(0).astype(int).map(lambda v: label_map.get(int(v), 0)).astype('int8')
 
             # Optionally trim dataset to at most MAX_OUTPUT_ROWS using configured sampling strategy
-            if MAX_OUTPUT_ROWS is not None and len(processed) > MAX_OUTPUT_ROWS:
+            limit_rows = MAX_OUTPUT_ROWS
+            if DOUBLE_DATASET and MAX_OUTPUT_ROWS is not None:
+                limit_rows = MAX_OUTPUT_ROWS * 2
+
+            if limit_rows is not None and len(processed) > limit_rows:
                 n = len(processed)
-                keep = MAX_OUTPUT_ROWS
+                keep = limit_rows
                 if OUTPUT_SAMPLING_STRATEGY == 'uniform':
                     # evenly spaced indices across the dataset
                     indices = np.linspace(0, n - 1, num=keep, dtype=int)
@@ -287,21 +312,62 @@ def main():
                 else:
                     raise ValueError(f"Unknown OUTPUT_SAMPLING_STRATEGY: {OUTPUT_SAMPLING_STRATEGY}")
 
-            out_base = os.path.join(target_dir, f'subject{subject_id}_processed')
-            meta = export_binary_with_metadata(processed, out_base)
-            # attach subject and tag
-            meta_entry = {
-                'subject': subject_id,
-                'tag': tag,
-                'filename': os.path.relpath(meta['filename'], start='.'),
-                'rows': meta['rows'],
-                'bytes_per_row': meta['total_bytes_per_row'],
-                'total_bytes': meta['rows'] * meta['total_bytes_per_row']
-            }
-            all_files_meta.append(meta_entry)
-            # store schema once
-            if schema_written is None:
-                schema_written = meta['columns']
+            if DOUBLE_DATASET:
+                # Split processed dataframe into two halves
+                half_point = len(processed) // 2
+                df1 = processed.iloc[:half_point].reset_index(drop=True)
+                df2 = processed.iloc[half_point:].reset_index(drop=True)
+
+                # Export Part 1
+                out_base_1 = os.path.join(target_dir, f'subject{subject_id}_processed_1')
+                meta1 = export_binary_with_metadata(df1, out_base_1)
+                
+                # Export Part 2
+                out_base_2 = os.path.join(target_dir, f'subject{subject_id}_processed_2')
+                meta2 = export_binary_with_metadata(df2, out_base_2)
+
+                # Add meta for both
+                meta_entry1 = {
+                    'subject': subject_id,
+                    'tag': tag,
+                    'filename': os.path.relpath(meta1['filename'], start='.'),
+                    'rows': meta1['rows'],
+                    'bytes_per_row': meta1['total_bytes_per_row'],
+                    'total_bytes': meta1['rows'] * meta1['total_bytes_per_row']
+                }
+                all_files_meta.append(meta_entry1)
+
+                meta_entry2 = {
+                    'subject': subject_id,
+                    'tag': tag,
+                    'filename': os.path.relpath(meta2['filename'], start='.'),
+                    'rows': meta2['rows'],
+                    'bytes_per_row': meta2['total_bytes_per_row'],
+                    'total_bytes': meta2['rows'] * meta2['total_bytes_per_row']
+                }
+                all_files_meta.append(meta_entry2)
+
+                # store schema once (from first one is fine)
+                if schema_written is None:
+                    schema_written = meta1['columns']
+
+            else:
+                out_base = os.path.join(target_dir, f'subject{subject_id}_processed')
+                meta = export_binary_with_metadata(processed, out_base)
+                # attach subject and tag
+                meta_entry = {
+                    'subject': subject_id,
+                    'tag': tag,
+                    'filename': os.path.relpath(meta['filename'], start='.'),
+                    'rows': meta['rows'],
+                    'bytes_per_row': meta['total_bytes_per_row'],
+                    'total_bytes': meta['rows'] * meta['total_bytes_per_row']
+                }
+                all_files_meta.append(meta_entry)
+                # store schema once
+                if schema_written is None:
+                    schema_written = meta['columns']
+
 
         # Protocol
         protocol_path = os.path.join(PROTOCOL_DIR, f'subject{subject_id}.dat')

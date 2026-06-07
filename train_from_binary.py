@@ -197,6 +197,37 @@ def build_and_train(X, y, layers, epochs=1, rounds=1, lr=0.00625, seed=42):
 
 
 def main():
+    if len(sys.argv) > 1 and sys.argv[1] in ('--help', '-h'):
+        print("""
+Usage: python train_from_binary.py [BINARY_FILE] [METADATA_FILE]
+
+Train a small MLP classifier on binary data produced by preprocess.py.
+This script emulates the ESP32 on-device training process using scikit-learn.
+
+Arguments:
+  BINARY_FILE    Path to the binary dataset file (e.g., out/merge/merged.bin).
+                 Defaults to the first .bin file found in ./out/merge/.
+  METADATA_FILE  Path to the metadata JSON file describing the schema.
+                 Defaults to ./out/metadata.json.
+
+Options:
+  -h, --help     Show this help message and exit.
+
+Description:
+  The script reads the binary file according to the schema in metadata.json.
+  It expects the schema to define column types and offsets.
+  The model trained is an MLPClassifier with partial_fit to simulate
+  incremental learning.
+  
+  Hyperparameters (epochs, layers, learning rate) are configured at the top
+  of this script.
+""")
+        sys.exit(0)
+
+    if len(sys.argv) < 2:
+        print("Using default paths (./out/merge/*.bin, ./out/metadata.json)...")
+        # continue to default logic
+    
     # CLI args: optional bin file and metadata
     bin_path = None
     meta_path = None
